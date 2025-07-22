@@ -337,9 +337,27 @@
                 this.fileQueue = [];
                 this.receivedFiles = new Map();
                 this.chunkSize = 16384; // 16KB chunks
+                this.connectionTimeout = null;
+                this.isConnecting = false;
                 
                 this.initializeElements();
                 this.setupEventListeners();
+                this.checkBrowserSupport();
+            }
+            
+            checkBrowserSupport() {
+                if (!window.RTCPeerConnection) {
+                    this.updateStatus('Browser tidak support WebRTC', 'error');
+                    return false;
+                }
+                
+                // Suppress Chrome extension errors
+                if (window.chrome && chrome.runtime && chrome.runtime.lastError) {
+                    // Clear the error
+                    chrome.runtime.lastError;
+                }
+                
+                return true;
             }
             
             initializeElements() {
@@ -373,37 +391,64 @@
             }
             
             async createRoom() {
+                if (!this.checkBrowserSupport()) return;
+                
                 try {
                     this.isHost = true;
+                    this.isConnecting = true;
                     this.roomId = this.generateRoomId();
                     
+                    this.updateStatus('Membuat koneksi...', 'waiting');
+                    
                     await this.setupPeerConnection();
+                    
                     this.dataChannel = this.peerConnection.createDataChannel('fileTransfer', {
-                        ordered: true
+                        ordered: true,
+                        maxRetransmits: 3
                     });
+                    
                     this.setupDataChannel(this.dataChannel);
                     
-                    const offer = await this.peerConnection.createOffer();
+                    const offer = await this.peerConnection.createOffer({
+                        offerToReceiveAudio: false,
+                        offerToReceiveVideo: false
+                    });
+                    
                     await this.peerConnection.setLocalDescription(offer);
                     
-                    // Store offer in localStorage for simple signaling
-                    localStorage.setItem(`room_${this.roomId}`, JSON.stringify({
-                        offer: offer,
-                        timestamp: Date.now()
-                    }));
+                    // Wait for ICE gathering to complete
+                    await this.waitForIceComplete();
+                    
+                    // Store offer with ICE candidates
+                    const roomData = {
+                        offer: this.peerConnection.localDescription,
+                        timestamp: Date.now(),
+                        host: true
+                    };
+                    
+                    localStorage.setItem(`room_${this.roomId}`, JSON.stringify(roomData));
                     
                     this.elements.roomIdDisplay.value = this.roomId;
                     this.elements.connectionIdSection.style.display = 'block';
                     this.elements.joinIdSection.style.display = 'none';
                     
-                    this.updateStatus('Menunggu koneksi...', 'waiting');
+                    this.updateStatus(`Room ${this.roomId} dibuat. Menunggu koneksi...`, 'waiting');
+                    
+                    // Set connection timeout
+                    this.connectionTimeout = setTimeout(() => {
+                        if (this.isConnecting) {
+                            this.updateStatus('Timeout menunggu koneksi', 'error');
+                            this.resetConnection();
+                        }
+                    }, 120000); // 2 minutes timeout
                     
                     // Check for answer periodically
                     this.checkForAnswer();
                     
                 } catch (error) {
                     console.error('Error creating room:', error);
-                    this.updateStatus('Error membuat room', 'error');
+                    this.updateStatus(`Error: ${error.message}`, 'error');
+                    this.resetConnection();
                 }
             }
             
@@ -413,16 +458,24 @@
             }
             
             async joinRoom() {
+                if (!this.checkBrowserSupport()) return;
+                
                 try {
-                    const roomId = this.elements.joinRoomInput.value.trim();
-                    if (!roomId) return;
+                    const roomId = this.elements.joinRoomInput.value.trim().toUpperCase();
+                    if (!roomId) {
+                        this.updateStatus('Masukkan Room ID yang valid', 'error');
+                        return;
+                    }
                     
                     this.isHost = false;
+                    this.isConnecting = true;
                     this.roomId = roomId;
+                    
+                    this.updateStatus('Mencari room...', 'waiting');
                     
                     const roomData = localStorage.getItem(`room_${roomId}`);
                     if (!roomData) {
-                        this.updateStatus('Room tidak ditemukan', 'error');
+                        this.updateStatus('Room tidak ditemukan. Pastikan Room ID benar', 'error');
                         return;
                     }
                     
@@ -435,111 +488,212 @@
                         this.setupDataChannel(this.dataChannel);
                     };
                     
-                    await this.peerConnection.setRemoteDescription(offer);
+                    this.updateStatus('Connecting ke room...', 'waiting');
+                    
+                    await this.peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+                    
                     const answer = await this.peerConnection.createAnswer();
                     await this.peerConnection.setLocalDescription(answer);
                     
-                    // Store answer
-                    localStorage.setItem(`answer_${roomId}`, JSON.stringify({
-                        answer: answer,
-                        timestamp: Date.now()
-                    }));
+                    // Wait for ICE gathering
+                    await this.waitForIceComplete();
                     
-                    this.updateStatus('Connecting...', 'waiting');
+                    // Store answer with ICE candidates
+                    const answerData = {
+                        answer: this.peerConnection.localDescription,
+                        timestamp: Date.now(),
+                        client: true
+                    };
+                    
+                    localStorage.setItem(`answer_${roomId}`, JSON.stringify(answerData));
+                    
+                    this.updateStatus('Menunggu konfirmasi host...', 'waiting');
+                    
+                    // Set connection timeout
+                    this.connectionTimeout = setTimeout(() => {
+                        if (this.isConnecting) {
+                            this.updateStatus('Timeout connecting ke room', 'error');
+                            this.resetConnection();
+                        }
+                    }, 60000); // 1 minute timeout
                     
                 } catch (error) {
                     console.error('Error joining room:', error);
-                    this.updateStatus('Error joining room', 'error');
+                    this.updateStatus(`Error: ${error.message}`, 'error');
+                    this.resetConnection();
                 }
             }
             
             async setupPeerConnection() {
-                this.peerConnection = new RTCPeerConnection({
+                // Close existing connection if any
+                if (this.peerConnection) {
+                    this.peerConnection.close();
+                }
+                
+                const config = {
                     iceServers: [
                         { urls: 'stun:stun.l.google.com:19302' },
-                        { urls: 'stun:stun1.l.google.com:19302' }
-                    ]
+                        { urls: 'stun:stun1.l.google.com:19302' },
+                        { urls: 'stun:stun2.l.google.com:19302' }
+                    ],
+                    iceCandidatePoolSize: 10
+                };
+                
+                this.peerConnection = new RTCPeerConnection(config);
+                
+                // Add error handling
+                this.peerConnection.addEventListener('connectionstatechange', () => {
+                    console.log('Connection state:', this.peerConnection.connectionState);
+                    
+                    switch (this.peerConnection.connectionState) {
+                        case 'connected':
+                            this.isConnecting = false;
+                            this.clearConnectionTimeout();
+                            this.updateStatus('🎉 Terhubung! Siap berbagi file', 'connected');
+                            this.elements.fileSection.style.display = 'block';
+                            break;
+                        case 'disconnected':
+                            this.updateStatus('Koneksi terputus', 'error');
+                            break;
+                        case 'failed':
+                            this.updateStatus('Koneksi gagal', 'error');
+                            this.resetConnection();
+                            break;
+                        case 'closed':
+                            this.updateStatus('Koneksi ditutup', 'error');
+                            break;
+                    }
                 });
                 
-                this.peerConnection.oniceconnectionstatechange = () => {
+                this.peerConnection.addEventListener('icegatheringstatechange', () => {
+                    console.log('ICE gathering state:', this.peerConnection.iceGatheringState);
+                });
+                
+                this.peerConnection.addEventListener('iceconnectionstatechange', () => {
                     console.log('ICE connection state:', this.peerConnection.iceConnectionState);
-                    if (this.peerConnection.iceConnectionState === 'connected') {
-                        this.updateStatus('Terhubung! Siap berbagi file', 'connected');
-                        this.elements.fileSection.style.display = 'block';
-                    } else if (this.peerConnection.iceConnectionState === 'disconnected') {
-                        this.updateStatus('Koneksi terputus', 'error');
-                    }
-                };
+                });
                 
-                this.peerConnection.onicecandidate = async (event) => {
-                    if (event.candidate) {
-                        // Store ICE candidates
-                        const candidates = JSON.parse(localStorage.getItem(`candidates_${this.roomId}`) || '[]');
-                        candidates.push({
-                            candidate: event.candidate,
-                            isHost: this.isHost,
-                            timestamp: Date.now()
-                        });
-                        localStorage.setItem(`candidates_${this.roomId}`, JSON.stringify(candidates));
-                    }
-                };
+                // Handle errors
+                this.peerConnection.addEventListener('error', (event) => {
+                    console.error('PeerConnection error:', event);
+                    this.updateStatus('Koneksi error', 'error');
+                });
                 
-                // Check for ICE candidates periodically
-                this.checkForCandidates();
+                return this.peerConnection;
             }
             
             setupDataChannel(channel) {
-                channel.onopen = () => {
+                channel.addEventListener('open', () => {
                     console.log('Data channel opened');
-                    this.updateStatus('Terhubung! Siap berbagi file', 'connected');
+                    this.isConnecting = false;
+                    this.clearConnectionTimeout();
+                    this.updateStatus('🎉 Channel terbuka! Siap berbagi file', 'connected');
                     this.elements.fileSection.style.display = 'block';
-                };
+                });
                 
-                channel.onmessage = (event) => {
-                    this.handleDataChannelMessage(event.data);
-                };
+                channel.addEventListener('message', (event) => {
+                    try {
+                        this.handleDataChannelMessage(event.data);
+                    } catch (error) {
+                        console.error('Error handling message:', error);
+                    }
+                });
                 
-                channel.onerror = (error) => {
-                    console.error('Data channel error:', error);
-                };
+                channel.addEventListener('error', (event) => {
+                    console.error('Data channel error:', event);
+                    this.updateStatus('Channel error', 'error');
+                });
+                
+                channel.addEventListener('close', () => {
+                    console.log('Data channel closed');
+                    this.updateStatus('Channel tertutup', 'error');
+                });
+            }
+            
+            async waitForIceComplete() {
+                return new Promise((resolve) => {
+                    if (this.peerConnection.iceGatheringState === 'complete') {
+                        resolve();
+                        return;
+                    }
+                    
+                    const timeout = setTimeout(() => {
+                        resolve(); // Resolve anyway after timeout
+                    }, 5000);
+                    
+                    this.peerConnection.addEventListener('icegatheringstatechange', () => {
+                        if (this.peerConnection.iceGatheringState === 'complete') {
+                            clearTimeout(timeout);
+                            resolve();
+                        }
+                    });
+                });
+            }
+            
+            clearConnectionTimeout() {
+                if (this.connectionTimeout) {
+                    clearTimeout(this.connectionTimeout);
+                    this.connectionTimeout = null;
+                }
+            }
+            
+            resetConnection() {
+                this.isConnecting = false;
+                this.clearConnectionTimeout();
+                
+                if (this.peerConnection) {
+                    this.peerConnection.close();
+                    this.peerConnection = null;
+                }
+                
+                this.dataChannel = null;
+                this.elements.fileSection.style.display = 'none';
+                
+                // Clear UI
+                this.elements.connectionIdSection.style.display = 'none';
+                this.elements.joinIdSection.style.display = 'none';
+                this.elements.joinRoomInput.value = '';
+                this.elements.roomIdDisplay.value = '';
             }
             
             checkForAnswer() {
                 if (!this.isHost) return;
                 
                 const checkInterval = setInterval(() => {
-                    const answerData = localStorage.getItem(`answer_${this.roomId}`);
-                    if (answerData) {
-                        const { answer } = JSON.parse(answerData);
-                        this.peerConnection.setRemoteDescription(answer);
-                        clearInterval(checkInterval);
-                        localStorage.removeItem(`answer_${this.roomId}`);
+                    try {
+                        const answerData = localStorage.getItem(`answer_${this.roomId}`);
+                        if (answerData) {
+                            const { answer } = JSON.parse(answerData);
+                            
+                            if (this.peerConnection && this.peerConnection.signalingState !== 'closed') {
+                                this.peerConnection.setRemoteDescription(new RTCSessionDescription(answer))
+                                    .then(() => {
+                                        console.log('Answer set successfully');
+                                        clearInterval(checkInterval);
+                                        localStorage.removeItem(`answer_${this.roomId}`);
+                                    })
+                                    .catch((error) => {
+                                        console.error('Error setting remote description:', error);
+                                    });
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Error checking for answer:', error);
                     }
                 }, 1000);
                 
-                // Stop checking after 5 minutes
-                setTimeout(() => clearInterval(checkInterval), 300000);
+                // Stop checking after 3 minutes
+                setTimeout(() => {
+                    clearInterval(checkInterval);
+                    if (this.isConnecting) {
+                        this.updateStatus('Timeout menunggu client', 'error');
+                        this.resetConnection();
+                    }
+                }, 180000);
             }
             
             checkForCandidates() {
-                const checkInterval = setInterval(() => {
-                    const candidatesData = localStorage.getItem(`candidates_${this.roomId}`);
-                    if (candidatesData) {
-                        const candidates = JSON.parse(candidatesData);
-                        candidates.forEach(async (candidateData) => {
-                            if (candidateData.isHost !== this.isHost) {
-                                try {
-                                    await this.peerConnection.addIceCandidate(candidateData.candidate);
-                                } catch (error) {
-                                    console.error('Error adding ICE candidate:', error);
-                                }
-                            }
-                        });
-                    }
-                }, 1000);
-                
-                // Stop checking after connection is established or 5 minutes
-                setTimeout(() => clearInterval(checkInterval), 300000);
+                // Removed ICE candidate checking since we're using complete descriptions
             }
             
             generateRoomId() {
@@ -576,49 +730,69 @@
             
             async sendFile(file) {
                 if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
-                    alert('Koneksi belum siap. Tunggu hingga status menunjukkan "Terhubung"');
+                    this.updateStatus('Koneksi belum siap. Tunggu hingga status menunjukkan "Terhubung"', 'error');
                     return;
                 }
                 
-                const fileId = this.generateFileId();
-                const fileItem = this.createFileItem(file, fileId);
-                this.elements.fileList.appendChild(fileItem);
-                
-                const fileInfo = {
-                    type: 'file-info',
-                    id: fileId,
-                    name: file.name,
-                    size: file.size,
-                    mimeType: file.type
-                };
-                
-                this.dataChannel.send(JSON.stringify(fileInfo));
-                
-                const chunks = Math.ceil(file.size / this.chunkSize);
-                let sentChunks = 0;
-                
-                for (let i = 0; i < chunks; i++) {
-                    const start = i * this.chunkSize;
-                    const end = Math.min(start + this.chunkSize, file.size);
-                    const chunk = file.slice(start, end);
+                try {
+                    const fileId = this.generateFileId();
+                    const fileItem = this.createFileItem(file, fileId);
+                    this.elements.fileList.appendChild(fileItem);
                     
-                    const arrayBuffer = await chunk.arrayBuffer();
-                    const chunkData = {
-                        type: 'file-chunk',
+                    const fileInfo = {
+                        type: 'file-info',
                         id: fileId,
-                        chunkIndex: i,
-                        totalChunks: chunks,
-                        data: Array.from(new Uint8Array(arrayBuffer))
+                        name: file.name,
+                        size: file.size,
+                        mimeType: file.type
                     };
                     
-                    this.dataChannel.send(JSON.stringify(chunkData));
-                    sentChunks++;
+                    this.dataChannel.send(JSON.stringify(fileInfo));
                     
-                    const progress = (sentChunks / chunks) * 100;
-                    this.updateFileProgress(fileId, progress);
+                    const chunks = Math.ceil(file.size / this.chunkSize);
+                    let sentChunks = 0;
                     
-                    // Small delay to prevent overwhelming the channel
-                    await new Promise(resolve => setTimeout(resolve, 10));
+                    for (let i = 0; i < chunks; i++) {
+                        // Check if channel is still open
+                        if (this.dataChannel.readyState !== 'open') {
+                            this.updateStatus('Koneksi terputus saat mengirim file', 'error');
+                            return;
+                        }
+                        
+                        const start = i * this.chunkSize;
+                        const end = Math.min(start + this.chunkSize, file.size);
+                        const chunk = file.slice(start, end);
+                        
+                        const arrayBuffer = await chunk.arrayBuffer();
+                        const chunkData = {
+                            type: 'file-chunk',
+                            id: fileId,
+                            chunkIndex: i,
+                            totalChunks: chunks,
+                            data: Array.from(new Uint8Array(arrayBuffer))
+                        };
+                        
+                        // Wait for channel to be ready if buffer is full
+                        while (this.dataChannel.bufferedAmount > 1024 * 1024) { // 1MB buffer
+                            await new Promise(resolve => setTimeout(resolve, 100));
+                        }
+                        
+                        this.dataChannel.send(JSON.stringify(chunkData));
+                        sentChunks++;
+                        
+                        const progress = (sentChunks / chunks) * 100;
+                        this.updateFileProgress(fileId, progress);
+                        
+                        // Small delay to prevent overwhelming
+                        if (i % 10 === 0) {
+                            await new Promise(resolve => setTimeout(resolve, 10));
+                        }
+                    }
+                    
+                    console.log(`File ${file.name} sent successfully`);
+                } catch (error) {
+                    console.error('Error sending file:', error);
+                    this.updateStatus(`Error mengirim file: ${error.message}`, 'error');
                 }
             }
             
