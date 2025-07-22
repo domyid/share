@@ -405,10 +405,7 @@
                 this.isSending = false;
                 this.maxFileSize = 8 * 1024 * 1024 * 1024; // 8GB max file size
                 this.adaptiveChunking = true;
-                this.parallelStreams = 3; // Multiple streams for large files
-                this.connectionMonitor = null;
-                this.lastActivity = Date.now();
-                this.pausedTransfers = new Map(); // Store paused transfers
+                this.parallelStreams = 1; // Disable parallel untuk stability
                 this.connectionTimeout = null;
                 this.isConnecting = false;
                 
@@ -730,88 +727,7 @@
                 });
             }
             
-            startConnectionMonitor() {
-                // Clear existing monitor
-                if (this.connectionMonitor) {
-                    clearInterval(this.connectionMonitor);
-                }
-                
-                this.connectionMonitor = setInterval(() => {
-                    if (this.dataChannel && this.dataChannel.readyState !== 'open') {
-                        console.warn('Data channel not open, attempting recovery...');
-                        this.handleConnectionLoss();
-                    }
-                    
-                    // Check for activity timeout (30 seconds without activity)
-                    if (Date.now() - this.lastActivity > 30000 && this.isSending) {
-                        console.warn('Transfer timeout detected');
-                        this.handleTransferTimeout();
-                    }
-                }, 2000); // Check every 2 seconds
-            }
-            
-            stopConnectionMonitor() {
-                if (this.connectionMonitor) {
-                    clearInterval(this.connectionMonitor);
-                    this.connectionMonitor = null;
-                }
-            }
-            
-            handleConnectionLoss() {
-                this.updateStatus('⚠️ Koneksi terputus, mencoba recovery...', 'error');
-                
-                // Pause current transfers
-                if (this.isSending) {
-                    this.pauseCurrentTransfer();
-                }
-                
-                // Try to recover connection
-                setTimeout(() => {
-                    this.attemptReconnection();
-                }, 2000);
-            }
-            
-            handleTransferTimeout() {
-                this.updateStatus('⏰ Transfer timeout, mencoba recovery...', 'error');
-                
-                // Reset data channel
-                if (this.dataChannel) {
-                    try {
-                        this.dataChannel.close();
-                    } catch (e) {
-                        console.log('Error closing data channel:', e);
-                    }
-                }
-                
-                this.attemptReconnection();
-            }
-            
-            pauseCurrentTransfer() {
-                // Implementation for pausing transfers would go here
-                console.log('Pausing current transfer...');
-                this.isSending = false;
-            }
-            
-            attemptReconnection() {
-                if (this.peerConnection && this.peerConnection.connectionState === 'connected') {
-                    // Try to recreate data channel
-                    try {
-                        if (this.isHost) {
-                            this.dataChannel = this.peerConnection.createDataChannel('fileTransfer-recovery', {
-                                ordered: true,
-                                maxPacketLifeTime: 30000,
-                                maxRetransmits: 3
-                            });
-                            this.setupDataChannel(this.dataChannel);
-                        }
-                    } catch (error) {
-                        console.error('Failed to recreate data channel:', error);
-                        this.updateStatus('❌ Gagal recovery koneksi', 'error');
-                    }
-                } else {
-                    this.updateStatus('❌ Koneksi peer terputus', 'error');
-                }
-            }
+            // Remove all the complex monitoring functions
             
             async waitForIceGathering() {
                 return new Promise((resolve) => {
@@ -848,7 +764,6 @@
                 this.isConnecting = false;
                 this.isSending = false;
                 this.clearConnectionTimeout();
-                this.stopConnectionMonitor();
                 
                 if (this.peerConnection) {
                     this.peerConnection.close();
@@ -858,11 +773,9 @@
                 this.dataChannel = null;
                 this.isHost = false;
                 this.roomId = null;
-                this.lastActivity = Date.now();
                 
                 // Clear transfer queues
                 this.sendQueue = [];
-                this.pausedTransfers.clear();
                 
                 // Reset UI
                 this.elements.fileSection.style.display = 'none';
@@ -964,68 +877,34 @@
             }
             
             async sendFileInternal(file, fileId) {
-                try {
-                    if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
-                        throw new Error('Data channel tidak siap untuk transfer');
-                    }
-                    
-                    // Send file info first
-                    const fileInfo = {
-                        type: 'file-info',
-                        id: fileId,
-                        name: file.name,
-                        size: file.size,
-                        mimeType: file.type
-                    };
-                    
-                    await this.sendMessage(JSON.stringify(fileInfo));
-                    
-                    // Adaptive chunk size untuk speed optimization
-                    let dynamicChunkSize = this.chunkSize;
-                    if (file.size > 1024 * 1024 * 1024) { // Files > 1GB
-                        dynamicChunkSize = 131072; // 128KB chunks untuk file sangat besar
-                    } else if (file.size > 100 * 1024 * 1024) { // Files > 100MB
-                        dynamicChunkSize = 65536; // 64KB chunks
-                    } else if (file.size > 10 * 1024 * 1024) { // Files > 10MB
-                        dynamicChunkSize = 32768; // 32KB chunks
-                    }
-                    
-                    const chunks = Math.ceil(file.size / dynamicChunkSize);
-                    const startTime = Date.now();
-                    
-                    this.updateStatus(`🚀 Mengirim ${file.name} (${this.formatFileSize(file.size)}) - ${chunks.toLocaleString()} chunks @ ${this.formatFileSize(dynamicChunkSize)}/chunk`, 'waiting');
-                    
-                    // Connection health check
-                    if (!this.isConnectionHealthy()) {
-                        throw new Error('Koneksi tidak stabil untuk transfer file besar');
-                    }
-                    
-                    // Parallel sending for large files
-                    if (file.size > 500 * 1024 * 1024 && this.parallelStreams > 1) { // Files > 500MB
-                        await this.sendFileParallel(file, fileId, dynamicChunkSize, chunks, startTime);
-                    } else {
-                        await this.sendFileSequential(file, fileId, dynamicChunkSize, chunks, startTime);
-                    }
-                    
-                } catch (error) {
-                    console.error('Error in sendFileInternal:', error);
-                    
-                    if (error.message.includes('tidak terbuka') || error.message.includes('tertutup')) {
-                        this.updateStatus(`💔 Koneksi terputus saat mengirim ${file.name}. Coba reconnect dan kirim ulang.`, 'error');
-                        this.handleConnectionLoss();
-                    } else {
-                        this.updateStatus(`❌ Error mengirim ${file.name}: ${error.message}`, 'error');
-                    }
-                    
-                    throw error;
+                if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+                    throw new Error('Data channel tidak siap');
                 }
-            }
-            
-            isConnectionHealthy() {
-                return this.dataChannel && 
-                       this.dataChannel.readyState === 'open' &&
-                       this.peerConnection &&
-                       this.peerConnection.connectionState === 'connected';
+                
+                // Send file info first
+                const fileInfo = {
+                    type: 'file-info',
+                    id: fileId,
+                    name: file.name,
+                    size: file.size,
+                    mimeType: file.type
+                };
+                
+                await this.sendMessage(JSON.stringify(fileInfo));
+                
+                // Conservative chunking untuk stability
+                let dynamicChunkSize = this.chunkSize; // 16KB default
+                if (file.size > 100 * 1024 * 1024) { // Files > 100MB
+                    dynamicChunkSize = 32768; // 32KB chunks untuk file besar
+                }
+                
+                const chunks = Math.ceil(file.size / dynamicChunkSize);
+                const startTime = Date.now();
+                
+                this.updateStatus(`📤 Mengirim ${file.name} (${this.formatFileSize(file.size)}) - ${chunks.toLocaleString()} chunks`, 'waiting');
+                
+                // Always use sequential untuk stability
+                await this.sendFileSequential(file, fileId, dynamicChunkSize, chunks, startTime);
             }
             
             async sendFileSequential(file, fileId, chunkSize, totalChunks, startTime) {
@@ -1034,27 +913,12 @@
                 let lastSentChunks = 0;
                 
                 for (let i = 0; i < totalChunks; i++) {
-                    // Connection health check setiap 100 chunks
-                    if (i % 100 === 0 && !this.isConnectionHealthy()) {
-                        throw new Error('Koneksi tidak sehat, menghentikan transfer');
-                    }
-                    
-                    // Adaptive buffer management
-                    const bufferThreshold = this.adaptiveBufferThreshold(file.size);
-                    
-                    let waitCount = 0;
-                    while (this.dataChannel.bufferedAmount > bufferThreshold) {
-                        await new Promise(resolve => setTimeout(resolve, 5));
-                        waitCount++;
+                    // Simple buffer management
+                    while (this.dataChannel.bufferedAmount > this.maxBufferSize / 2) {
+                        await new Promise(resolve => setTimeout(resolve, 10));
                         
-                        // Check connection every 100ms of waiting  
-                        if (waitCount % 20 === 0 && !this.isConnectionHealthy()) {
-                            throw new Error('Koneksi terputus saat menunggu buffer');
-                        }
-                        
-                        // Timeout after 10 seconds of waiting
-                        if (waitCount > 2000) {
-                            throw new Error('Buffer timeout - kemungkinan koneksi bermasalah');
+                        if (this.dataChannel.readyState !== 'open') {
+                            throw new Error('Koneksi terputus saat mengirim');
                         }
                     }
                     
@@ -1071,13 +935,12 @@
                         data: Array.from(new Uint8Array(arrayBuffer))
                     };
                     
-                    // Send with connection check
                     await this.sendMessage(JSON.stringify(chunkData));
                     sentChunks++;
                     
-                    // Speed calculation and progress update
+                    // Progress update setiap 3 detik
                     const now = Date.now();
-                    if (now - lastSpeedCheck > 2000) { // Every 2 seconds
+                    if (now - lastSpeedCheck > 3000) {
                         const timeElapsed = (now - lastSpeedCheck) / 1000;
                         const chunksInPeriod = sentChunks - lastSentChunks;
                         const bytesInPeriod = chunksInPeriod * chunkSize;
@@ -1087,15 +950,15 @@
                         const remaining = (totalChunks - sentChunks) / (chunksInPeriod / timeElapsed);
                         const eta = remaining > 0 ? this.formatTime(remaining) : '';
                         
-                        this.updateStatus(`🚀 ${file.name}: ${Math.round(progress)}% @ ${currentSpeed.toFixed(1)} MB/s ${eta ? `(ETA: ${eta})` : ''}`, 'waiting');
+                        this.updateStatus(`📤 ${file.name}: ${Math.round(progress)}% @ ${currentSpeed.toFixed(1)} MB/s ${eta ? `(ETA: ${eta})` : ''}`, 'waiting');
                         this.updateFileProgress(fileId, progress);
                         
                         lastSpeedCheck = now;
                         lastSentChunks = sentChunks;
                     }
                     
-                    // Dynamic throttling based on speed
-                    if (i % this.getThrottleInterval(file.size, chunkSize) === 0) {
+                    // Simple throttling
+                    if (i % 20 === 0) {
                         await new Promise(resolve => setTimeout(resolve, 1));
                     }
                 }
@@ -1211,25 +1074,17 @@
             
             async sendMessage(message) {
                 return new Promise((resolve, reject) => {
-                    // Pre-flight check
                     if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
                         reject(new Error('Data channel tidak terbuka'));
                         return;
                     }
                     
-                    const maxRetries = 5; // Increased retries
+                    const maxRetries = 3;
                     let retries = 0;
                     
                     const trySend = () => {
-                        // Double check before sending
-                        if (this.dataChannel.readyState !== 'open') {
-                            reject(new Error('Data channel tertutup saat akan mengirim'));
-                            return;
-                        }
-                        
                         try {
                             this.dataChannel.send(message);
-                            this.lastActivity = Date.now(); // Update activity timestamp
                             resolve();
                         } catch (error) {
                             retries++;
@@ -1238,10 +1093,7 @@
                                 console.warn(`Send queue full, retry ${retries}/${maxRetries}`);
                                 setTimeout(() => {
                                     trySend();
-                                }, 200 * retries); // Longer exponential backoff
-                            } else if (error.name === 'InvalidStateError') {
-                                // Data channel closed
-                                reject(new Error('Data channel tertutup saat mengirim'));
+                                }, 100 * retries);
                             } else {
                                 reject(error);
                             }
