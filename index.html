@@ -424,9 +424,12 @@
                     // Wait for ICE gathering to complete
                     await this.waitForIceComplete();
                     
-                    // Create shareable connection string
+                    // Create shareable connection string dengan plain object
                     const connectionData = {
-                        offer: this.peerConnection.localDescription,
+                        offer: {
+                            type: this.peerConnection.localDescription.type,
+                            sdp: this.peerConnection.localDescription.sdp
+                        },
                         roomId: this.roomId,
                         timestamp: Date.now()
                     };
@@ -507,9 +510,12 @@
                     // Wait for ICE gathering
                     await this.waitForIceComplete();
                     
-                    // Create answer data
+                    // Create answer data dengan plain object
                     const answerData = {
-                        answer: this.peerConnection.localDescription,
+                        answer: {
+                            type: this.peerConnection.localDescription.type,
+                            sdp: this.peerConnection.localDescription.sdp
+                        },
                         roomId: this.roomId,
                         timestamp: Date.now()
                     };
@@ -652,7 +658,11 @@
                 this.clearConnectionTimeout();
                 
                 if (this.broadcastChannel) {
-                    this.broadcastChannel.close();
+                    try {
+                        this.broadcastChannel.close();
+                    } catch (e) {
+                        console.log('Error closing broadcast channel:', e);
+                    }
                     this.broadcastChannel = null;
                 }
                 
@@ -669,41 +679,103 @@
                 this.elements.joinIdSection.style.display = 'none';
                 this.elements.joinRoomInput.value = '';
                 this.elements.roomIdDisplay.value = '';
-            }
-            
-            setupBroadcastChannel() {
-                if (!window.BroadcastChannel) return;
                 
-                this.broadcastChannel = new BroadcastChannel('p2p-file-share');
-                
-                this.broadcastChannel.addEventListener('message', (event) => {
-                    const { type, data } = event.data;
-                    
-                    if (type === 'answer' && this.isHost && data.roomId === this.roomId) {
-                        this.handleAnswer(data.answer);
+                // Clear any localStorage fallback data
+                if (this.roomId) {
+                    try {
+                        localStorage.removeItem(`p2p_answer_${this.roomId}`);
+                    } catch (e) {
+                        console.log('Error clearing localStorage:', e);
                     }
-                });
-            }
-            
-            broadcastAnswer(answerData) {
-                if (window.BroadcastChannel) {
-                    const channel = new BroadcastChannel('p2p-file-share');
-                    channel.postMessage({
-                        type: 'answer',
-                        data: answerData
-                    });
-                    channel.close();
                 }
             }
             
-            async handleAnswer(answer) {
+            setupBroadcastChannel() {
+                if (!window.BroadcastChannel) {
+                    console.log('BroadcastChannel not supported, using polling fallback');
+                    this.setupPollingFallback();
+                    return;
+                }
+                
+                try {
+                    this.broadcastChannel = new BroadcastChannel('p2p-file-share');
+                    
+                    this.broadcastChannel.addEventListener('message', (event) => {
+                        try {
+                            const { type, data } = event.data;
+                            
+                            if (type === 'answer' && this.isHost && data.roomId === this.roomId) {
+                                this.handleAnswer(data.answer);
+                            }
+                        } catch (error) {
+                            console.error('Error handling broadcast message:', error);
+                        }
+                    });
+                } catch (error) {
+                    console.error('Error setting up BroadcastChannel:', error);
+                    this.setupPollingFallback();
+                }
+            }
+            
+            setupPollingFallback() {
+                // Fallback untuk browser yang tidak support BroadcastChannel
+                if (!this.isHost) return;
+                
+                const pollInterval = setInterval(() => {
+                    try {
+                        const answerKey = `p2p_answer_${this.roomId}`;
+                        const answerData = localStorage.getItem(answerKey);
+                        
+                        if (answerData) {
+                            const data = JSON.parse(answerData);
+                            this.handleAnswer(data.answer);
+                            localStorage.removeItem(answerKey);
+                            clearInterval(pollInterval);
+                        }
+                    } catch (error) {
+                        console.error('Error in polling fallback:', error);
+                    }
+                }, 1000);
+                
+                // Stop polling after 5 minutes
+                setTimeout(() => clearInterval(pollInterval), 300000);
+            }
+            
+            broadcastAnswer(answerData) {
+                try {
+                    if (window.BroadcastChannel && this.broadcastChannel) {
+                        this.broadcastChannel.postMessage({
+                            type: 'answer',
+                            data: answerData
+                        });
+                    } else {
+                        // Fallback ke localStorage
+                        const answerKey = `p2p_answer_${answerData.roomId}`;
+                        localStorage.setItem(answerKey, JSON.stringify(answerData));
+                    }
+                } catch (error) {
+                    console.error('Error broadcasting answer:', error);
+                    // Fallback ke localStorage jika broadcast gagal
+                    try {
+                        const answerKey = `p2p_answer_${answerData.roomId}`;
+                        localStorage.setItem(answerKey, JSON.stringify(answerData));
+                    } catch (e) {
+                        console.error('Fallback localStorage also failed:', e);
+                    }
+                }
+            }
+            
+            async handleAnswer(answerObject) {
                 try {
                     if (this.peerConnection && this.peerConnection.signalingState !== 'closed') {
-                        await this.peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+                        // Convert plain object back to RTCSessionDescription
+                        const answer = new RTCSessionDescription(answerObject);
+                        await this.peerConnection.setRemoteDescription(answer);
                         console.log('Answer received and set successfully');
                     }
                 } catch (error) {
                     console.error('Error setting remote description:', error);
+                    this.updateStatus(`Error handling answer: ${error.message}`, 'error');
                 }
             }
             
