@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P2P File Share - LAN</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            width: 100%;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1rem;
+        }
+
+        .main-content {
+            padding: 40px;
+        }
+
+        .connection-section {
+            margin-bottom: 40px;
+        }
+
+        .connection-controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(79, 70, 229, 0.3);
+        }
+
+        .btn-secondary {
+            background: #f3f4f6;
+            color: #374151;
+            border: 2px solid #e5e7eb;
+        }
+
+        .btn-secondary:hover {
+            background: #e5e7eb;
+        }
+
+        .connection-id {
+            background: #f8fafc;
+            border: 2px dashed #cbd5e1;
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .connection-id input {
+            width: 100%;
+            max-width: 400px;
+            padding: 12px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 1rem;
+            text-align: center;
+            font-family: 'Courier New', monospace;
+        }
+
+        .status {
+            padding: 15px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            font-weight: 500;
+        }
+
+        .status.waiting {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .status.connected {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .status.error {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .file-section {
+            border-top: 2px solid #f1f5f9;
+            padding-top: 40px;
+        }
+
+        .file-drop-zone {
+            border: 3px dashed #cbd5e1;
+            border-radius: 16px;
+            padding: 60px 20px;
+            text-align: center;
+            margin-bottom: 30px;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+
+        .file-drop-zone:hover,
+        .file-drop-zone.dragover {
+            border-color: #4f46e5;
+            background: #f8fafc;
+        }
+
+        .file-drop-zone.dragover {
+            transform: scale(1.02);
+        }
+
+        .file-icon {
+            font-size: 4rem;
+            margin-bottom: 20px;
+            opacity: 0.7;
+        }
+
+        .file-input {
+            display: none;
+        }
+
+        .file-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .file-item {
+            background: #f8fafc;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 15px;
+            border: 2px solid #e2e8f0;
+        }
+
+        .file-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .file-name {
+            font-weight: 600;
+            color: #1e293b;
+        }
+
+        .file-size {
+            color: #64748b;
+            font-size: 0.9rem;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #e2e8f0;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4f46e5, #7c3aed);
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+
+        .received-files {
+            margin-top: 40px;
+        }
+
+        .received-file {
+            background: #ecfdf5;
+            border: 2px solid #10b981;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 15px;
+        }
+
+        .download-btn {
+            background: #10b981;
+            color: white;
+            padding: 8px 16px;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .download-btn:hover {
+            background: #059669;
+            transform: translateY(-1px);
+        }
+
+        @media (max-width: 768px) {
+            .connection-controls {
+                flex-direction: column;
+            }
+            
+            .btn {
+                width: 100%;
+                justify-content: center;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .main-content {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 P2P File Share</h1>
+            <p>Berbagi file langsung antar perangkat di jaringan LAN</p>
+        </div>
+        
+        <div class="main-content">
+            <!-- Connection Section -->
+            <div class="connection-section">
+                <h2>📡 Koneksi</h2>
+                <div class="connection-controls">
+                    <button class="btn btn-primary" id="createRoomBtn">
+                        🎯 Buat Room
+                    </button>
+                    <button class="btn btn-secondary" id="joinRoomBtn">
+                        🔗 Join Room
+                    </button>
+                </div>
+                
+                <div class="connection-id" id="connectionIdSection" style="display: none;">
+                    <p><strong>Room ID:</strong></p>
+                    <input type="text" id="roomIdDisplay" readonly placeholder="Generating...">
+                    <p style="margin-top: 10px; font-size: 0.9rem; color: #64748b;">
+                        Bagikan Room ID ini ke perangkat lain
+                    </p>
+                </div>
+                
+                <div class="connection-id" id="joinIdSection" style="display: none;">
+                    <p><strong>Masukkan Room ID:</strong></p>
+                    <input type="text" id="joinRoomInput" placeholder="Masukkan Room ID...">
+                    <button class="btn btn-primary" id="connectBtn" style="margin-top: 15px;">
+                        🔌 Koneksi
+                    </button>
+                </div>
+                
+                <div class="status" id="statusIndicator">
+                    ⏳ Siap untuk memulai koneksi
+                </div>
+            </div>
+            
+            <!-- File Sharing Section -->
+            <div class="file-section" id="fileSection" style="display: none;">
+                <h2>📁 Berbagi File</h2>
+                
+                <div class="file-drop-zone" id="fileDropZone">
+                    <div class="file-icon">📤</div>
+                    <h3>Drag & Drop file di sini</h3>
+                    <p>atau klik untuk memilih file</p>
+                    <input type="file" class="file-input" id="fileInput" multiple>
+                </div>
+                
+                <div class="file-list" id="fileList"></div>
+                
+                <div class="received-files" id="receivedFiles" style="display: none;">
+                    <h3>📥 File yang Diterima</h3>
+                    <div id="receivedFilesList"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        class P2PFileShare {
+            constructor() {
+                this.peerConnection = null;
+                this.dataChannel = null;
+                this.isHost = false;
+                this.roomId = null;
+                this.fileQueue = [];
+                this.receivedFiles = new Map();
+                this.chunkSize = 16384; // 16KB chunks
+                
+                this.initializeElements();
+                this.setupEventListeners();
+            }
+            
+            initializeElements() {
+                this.elements = {
+                    createRoomBtn: document.getElementById('createRoomBtn'),
+                    joinRoomBtn: document.getElementById('joinRoomBtn'),
+                    connectionIdSection: document.getElementById('connectionIdSection'),
+                    joinIdSection: document.getElementById('joinIdSection'),
+                    roomIdDisplay: document.getElementById('roomIdDisplay'),
+                    joinRoomInput: document.getElementById('joinRoomInput'),
+                    connectBtn: document.getElementById('connectBtn'),
+                    statusIndicator: document.getElementById('statusIndicator'),
+                    fileSection: document.getElementById('fileSection'),
+                    fileDropZone: document.getElementById('fileDropZone'),
+                    fileInput: document.getElementById('fileInput'),
+                    fileList: document.getElementById('fileList'),
+                    receivedFiles: document.getElementById('receivedFiles'),
+                    receivedFilesList: document.getElementById('receivedFilesList')
+                };
+            }
+            
+            setupEventListeners() {
+                this.elements.createRoomBtn.addEventListener('click', () => this.createRoom());
+                this.elements.joinRoomBtn.addEventListener('click', () => this.showJoinSection());
+                this.elements.connectBtn.addEventListener('click', () => this.joinRoom());
+                
+                this.elements.fileDropZone.addEventListener('click', () => this.elements.fileInput.click());
+                this.elements.fileDropZone.addEventListener('dragover', (e) => this.handleDragOver(e));
+                this.elements.fileDropZone.addEventListener('drop', (e) => this.handleDrop(e));
+                this.elements.fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
+            }
+            
+            async createRoom() {
+                try {
+                    this.isHost = true;
+                    this.roomId = this.generateRoomId();
+                    
+                    await this.setupPeerConnection();
+                    this.dataChannel = this.peerConnection.createDataChannel('fileTransfer', {
+                        ordered: true
+                    });
+                    this.setupDataChannel(this.dataChannel);
+                    
+                    const offer = await this.peerConnection.createOffer();
+                    await this.peerConnection.setLocalDescription(offer);
+                    
+                    // Store offer in localStorage for simple signaling
+                    localStorage.setItem(`room_${this.roomId}`, JSON.stringify({
+                        offer: offer,
+                        timestamp: Date.now()
+                    }));
+                    
+                    this.elements.roomIdDisplay.value = this.roomId;
+                    this.elements.connectionIdSection.style.display = 'block';
+                    this.elements.joinIdSection.style.display = 'none';
+                    
+                    this.updateStatus('Menunggu koneksi...', 'waiting');
+                    
+                    // Check for answer periodically
+                    this.checkForAnswer();
+                    
+                } catch (error) {
+                    console.error('Error creating room:', error);
+                    this.updateStatus('Error membuat room', 'error');
+                }
+            }
+            
+            showJoinSection() {
+                this.elements.joinIdSection.style.display = 'block';
+                this.elements.connectionIdSection.style.display = 'none';
+            }
+            
+            async joinRoom() {
+                try {
+                    const roomId = this.elements.joinRoomInput.value.trim();
+                    if (!roomId) return;
+                    
+                    this.isHost = false;
+                    this.roomId = roomId;
+                    
+                    const roomData = localStorage.getItem(`room_${roomId}`);
+                    if (!roomData) {
+                        this.updateStatus('Room tidak ditemukan', 'error');
+                        return;
+                    }
+                    
+                    const { offer } = JSON.parse(roomData);
+                    
+                    await this.setupPeerConnection();
+                    
+                    this.peerConnection.ondatachannel = (event) => {
+                        this.dataChannel = event.channel;
+                        this.setupDataChannel(this.dataChannel);
+                    };
+                    
+                    await this.peerConnection.setRemoteDescription(offer);
+                    const answer = await this.peerConnection.createAnswer();
+                    await this.peerConnection.setLocalDescription(answer);
+                    
+                    // Store answer
+                    localStorage.setItem(`answer_${roomId}`, JSON.stringify({
+                        answer: answer,
+                        timestamp: Date.now()
+                    }));
+                    
+                    this.updateStatus('Connecting...', 'waiting');
+                    
+                } catch (error) {
+                    console.error('Error joining room:', error);
+                    this.updateStatus('Error joining room', 'error');
+                }
+            }
+            
+            async setupPeerConnection() {
+                this.peerConnection = new RTCPeerConnection({
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' }
+                    ]
+                });
+                
+                this.peerConnection.oniceconnectionstatechange = () => {
+                    console.log('ICE connection state:', this.peerConnection.iceConnectionState);
+                    if (this.peerConnection.iceConnectionState === 'connected') {
+                        this.updateStatus('Terhubung! Siap berbagi file', 'connected');
+                        this.elements.fileSection.style.display = 'block';
+                    } else if (this.peerConnection.iceConnectionState === 'disconnected') {
+                        this.updateStatus('Koneksi terputus', 'error');
+                    }
+                };
+                
+                this.peerConnection.onicecandidate = async (event) => {
+                    if (event.candidate) {
+                        // Store ICE candidates
+                        const candidates = JSON.parse(localStorage.getItem(`candidates_${this.roomId}`) || '[]');
+                        candidates.push({
+                            candidate: event.candidate,
+                            isHost: this.isHost,
+                            timestamp: Date.now()
+                        });
+                        localStorage.setItem(`candidates_${this.roomId}`, JSON.stringify(candidates));
+                    }
+                };
+                
+                // Check for ICE candidates periodically
+                this.checkForCandidates();
+            }
+            
+            setupDataChannel(channel) {
+                channel.onopen = () => {
+                    console.log('Data channel opened');
+                    this.updateStatus('Terhubung! Siap berbagi file', 'connected');
+                    this.elements.fileSection.style.display = 'block';
+                };
+                
+                channel.onmessage = (event) => {
+                    this.handleDataChannelMessage(event.data);
+                };
+                
+                channel.onerror = (error) => {
+                    console.error('Data channel error:', error);
+                };
+            }
+            
+            checkForAnswer() {
+                if (!this.isHost) return;
+                
+                const checkInterval = setInterval(() => {
+                    const answerData = localStorage.getItem(`answer_${this.roomId}`);
+                    if (answerData) {
+                        const { answer } = JSON.parse(answerData);
+                        this.peerConnection.setRemoteDescription(answer);
+                        clearInterval(checkInterval);
+                        localStorage.removeItem(`answer_${this.roomId}`);
+                    }
+                }, 1000);
+                
+                // Stop checking after 5 minutes
+                setTimeout(() => clearInterval(checkInterval), 300000);
+            }
+            
+            checkForCandidates() {
+                const checkInterval = setInterval(() => {
+                    const candidatesData = localStorage.getItem(`candidates_${this.roomId}`);
+                    if (candidatesData) {
+                        const candidates = JSON.parse(candidatesData);
+                        candidates.forEach(async (candidateData) => {
+                            if (candidateData.isHost !== this.isHost) {
+                                try {
+                                    await this.peerConnection.addIceCandidate(candidateData.candidate);
+                                } catch (error) {
+                                    console.error('Error adding ICE candidate:', error);
+                                }
+                            }
+                        });
+                    }
+                }, 1000);
+                
+                // Stop checking after connection is established or 5 minutes
+                setTimeout(() => clearInterval(checkInterval), 300000);
+            }
+            
+            generateRoomId() {
+                return Math.random().toString(36).substr(2, 8).toUpperCase();
+            }
+            
+            updateStatus(message, type) {
+                this.elements.statusIndicator.textContent = message;
+                this.elements.statusIndicator.className = `status ${type}`;
+            }
+            
+            handleDragOver(e) {
+                e.preventDefault();
+                this.elements.fileDropZone.classList.add('dragover');
+            }
+            
+            handleDrop(e) {
+                e.preventDefault();
+                this.elements.fileDropZone.classList.remove('dragover');
+                const files = Array.from(e.dataTransfer.files);
+                this.handleFiles(files);
+            }
+            
+            handleFileSelect(e) {
+                const files = Array.from(e.target.files);
+                this.handleFiles(files);
+            }
+            
+            handleFiles(files) {
+                files.forEach(file => {
+                    this.sendFile(file);
+                });
+            }
+            
+            async sendFile(file) {
+                if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+                    alert('Koneksi belum siap. Tunggu hingga status menunjukkan "Terhubung"');
+                    return;
+                }
+                
+                const fileId = this.generateFileId();
+                const fileItem = this.createFileItem(file, fileId);
+                this.elements.fileList.appendChild(fileItem);
+                
+                const fileInfo = {
+                    type: 'file-info',
+                    id: fileId,
+                    name: file.name,
+                    size: file.size,
+                    mimeType: file.type
+                };
+                
+                this.dataChannel.send(JSON.stringify(fileInfo));
+                
+                const chunks = Math.ceil(file.size / this.chunkSize);
+                let sentChunks = 0;
+                
+                for (let i = 0; i < chunks; i++) {
+                    const start = i * this.chunkSize;
+                    const end = Math.min(start + this.chunkSize, file.size);
+                    const chunk = file.slice(start, end);
+                    
+                    const arrayBuffer = await chunk.arrayBuffer();
+                    const chunkData = {
+                        type: 'file-chunk',
+                        id: fileId,
+                        chunkIndex: i,
+                        totalChunks: chunks,
+                        data: Array.from(new Uint8Array(arrayBuffer))
+                    };
+                    
+                    this.dataChannel.send(JSON.stringify(chunkData));
+                    sentChunks++;
+                    
+                    const progress = (sentChunks / chunks) * 100;
+                    this.updateFileProgress(fileId, progress);
+                    
+                    // Small delay to prevent overwhelming the channel
+                    await new Promise(resolve => setTimeout(resolve, 10));
+                }
+            }
+            
+            handleDataChannelMessage(data) {
+                try {
+                    const message = JSON.parse(data);
+                    
+                    if (message.type === 'file-info') {
+                        this.receivedFiles.set(message.id, {
+                            name: message.name,
+                            size: message.size,
+                            mimeType: message.mimeType,
+                            chunks: [],
+                            receivedChunks: 0,
+                            totalChunks: 0
+                        });
+                    } else if (message.type === 'file-chunk') {
+                        this.handleFileChunk(message);
+                    }
+                } catch (error) {
+                    console.error('Error handling message:', error);
+                }
+            }
+            
+            handleFileChunk(chunkData) {
+                const fileData = this.receivedFiles.get(chunkData.id);
+                if (!fileData) return;
+                
+                fileData.chunks[chunkData.chunkIndex] = new Uint8Array(chunkData.data);
+                fileData.receivedChunks++;
+                fileData.totalChunks = chunkData.totalChunks;
+                
+                if (fileData.receivedChunks === fileData.totalChunks) {
+                    // File complete, reconstruct and offer download
+                    this.completeFileReceive(chunkData.id, fileData);
+                }
+            }
+            
+            completeFileReceive(fileId, fileData) {
+                const completeFile = new Blob(fileData.chunks, { type: fileData.mimeType });
+                
+                const receivedFileElement = document.createElement('div');
+                receivedFileElement.className = 'received-file';
+                receivedFileElement.innerHTML = `
+                    <div class="file-info">
+                        <span class="file-name">${fileData.name}</span>
+                        <span class="file-size">${this.formatFileSize(fileData.size)}</span>
+                    </div>
+                    <button class="download-btn" onclick="window.downloadFile('${fileId}')">
+                        💾 Download
+                    </button>
+                `;
+                
+                this.elements.receivedFilesList.appendChild(receivedFileElement);
+                this.elements.receivedFiles.style.display = 'block';
+                
+                // Store file for download
+                window.receivedFilesBlobs = window.receivedFilesBlobs || {};
+                window.receivedFilesBlobs[fileId] = {
+                    blob: completeFile,
+                    name: fileData.name
+                };
+            }
+            
+            createFileItem(file, fileId) {
+                const fileItem = document.createElement('div');
+                fileItem.className = 'file-item';
+                fileItem.innerHTML = `
+                    <div class="file-info">
+                        <span class="file-name">${file.name}</span>
+                        <span class="file-size">${this.formatFileSize(file.size)}</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progress-${fileId}"></div>
+                    </div>
+                `;
+                return fileItem;
+            }
+            
+            updateFileProgress(fileId, progress) {
+                const progressElement = document.getElementById(`progress-${fileId}`);
+                if (progressElement) {
+                    progressElement.style.width = `${progress}%`;
+                }
+            }
+            
+            generateFileId() {
+                return Date.now().toString(36) + Math.random().toString(36).substr(2);
+            }
+            
+            formatFileSize(bytes) {
+                if (bytes === 0) return '0 Bytes';
+                const k = 1024;
+                const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+            }
+        }
+        
+        // Global function for downloading files
+        window.downloadFile = function(fileId) {
+            const fileData = window.receivedFilesBlobs[fileId];
+            if (fileData) {
+                const url = URL.createObjectURL(fileData.blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = fileData.name;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }
+        };
+        
+        // Initialize the app
+        const app = new P2PFileShare();
+        
+        // Clear old room data on page load
+        Object.keys(localStorage).forEach(key => {
+            if (key.startsWith('room_') || key.startsWith('answer_') || key.startsWith('candidates_')) {
+                const data = JSON.parse(localStorage.getItem(key));
+                // Remove data older than 1 hour
+                if (Date.now() - data.timestamp > 3600000) {
+                    localStorage.removeItem(key);
+                }
+            }
+        });
+    </script>
+</body>
+</html>
