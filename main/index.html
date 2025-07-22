@@ -399,8 +399,8 @@
                 this.isHost = false;
                 this.roomId = null;
                 this.receivedFiles = new Map();
-                this.chunkSize = 32768; // 32KB chunks untuk file besar
-                this.maxBufferSize = 64 * 1024 * 1024; // 64MB buffer limit
+                this.chunkSize = 16384; // 16KB chunks (lebih kecil untuk stability)
+                this.maxBufferSize = 16 * 1024 * 1024; // 16MB buffer limit (lebih konservatif)
                 this.sendQueue = [];
                 this.isSending = false;
                 this.maxFileSize = 8 * 1024 * 1024 * 1024; // 8GB max file size
@@ -696,6 +696,11 @@
             }
             
             setupDataChannel(channel) {
+                // Set binaryType to handle large data efficiently
+                if (channel.binaryType !== undefined) {
+                    channel.binaryType = 'arraybuffer';
+                }
+                
                 channel.addEventListener('open', () => {
                     console.log('Data channel opened');
                     this.onConnectionEstablished();
@@ -713,6 +718,10 @@
                 channel.addEventListener('close', () => {
                     console.log('Data channel closed');
                     this.updateStatus('📪 Channel tertutup', 'error');
+                });
+                
+                channel.addEventListener('bufferedamountlow', () => {
+                    console.log('Buffer amount low, can send more data');
                 });
             }
             
@@ -882,30 +891,29 @@
                 
                 await this.sendMessage(JSON.stringify(fileInfo));
                 
-                // Calculate optimal chunk size based on file size
-                let dynamicChunkSize = this.chunkSize;
-                if (file.size > 100 * 1024 * 1024) { // Files > 100MB
-                    dynamicChunkSize = 65536; // 64KB chunks
-                } else if (file.size > 1024 * 1024 * 1024) { // Files > 1GB
-                    dynamicChunkSize = 131072; // 128KB chunks
-                }
-                
+                // Use conservative chunk size untuk stability
+                const dynamicChunkSize = this.chunkSize; // Tetap 16KB untuk semua file
                 const chunks = Math.ceil(file.size / dynamicChunkSize);
                 let sentChunks = 0;
                 const startTime = Date.now();
                 
                 this.updateStatus(`📤 Mengirim ${file.name} (${this.formatFileSize(file.size)}) - ${chunks.toLocaleString()} chunks...`, 'waiting');
                 
-                // Send chunks with advanced buffer management
+                // Send chunks dengan throttling ketat
                 for (let i = 0; i < chunks; i++) {
-                    // Advanced buffer management
-                    while (this.dataChannel.bufferedAmount > this.maxBufferSize) {
-                        await new Promise(resolve => setTimeout(resolve, 10));
+                    // Aggressive buffer monitoring
+                    while (this.dataChannel.bufferedAmount > this.maxBufferSize / 2) { // 8MB threshold
+                        await new Promise(resolve => setTimeout(resolve, 20)); // Longer wait
                         
                         // Check if connection is still alive
                         if (this.dataChannel.readyState !== 'open') {
                             throw new Error('Koneksi terputus saat mengirim');
                         }
+                    }
+                    
+                    // Additional check for queue space
+                    if (this.dataChannel.bufferedAmount > this.maxBufferSize / 4) { // 4MB threshold
+                        await new Promise(resolve => setTimeout(resolve, 10));
                     }
                     
                     const start = i * dynamicChunkSize;
@@ -921,6 +929,7 @@
                         data: Array.from(new Uint8Array(arrayBuffer))
                     };
                     
+                    // Send with retry mechanism
                     await this.sendMessage(JSON.stringify(chunkData));
                     
                     sentChunks++;
@@ -928,7 +937,7 @@
                     this.updateFileProgress(fileId, progress);
                     
                     // Progress update dengan estimasi waktu
-                    if (sentChunks % Math.max(1, Math.floor(chunks / 100)) === 0) { // Update setiap 1% untuk file besar
+                    if (sentChunks % Math.max(1, Math.floor(chunks / 50)) === 0) { // Update setiap 2% 
                         const elapsed = Date.now() - startTime;
                         const rate = sentChunks / (elapsed / 1000); // chunks per second
                         const remaining = (chunks - sentChunks) / rate;
@@ -937,14 +946,19 @@
                         this.updateStatus(`📤 ${file.name}: ${Math.round(progress)}% ${eta ? `(ETA: ${eta})` : ''}`, 'waiting');
                     }
                     
-                    // Dynamic delay based on buffer usage
-                    const bufferUsage = this.dataChannel.bufferedAmount / this.maxBufferSize;
-                    if (bufferUsage > 0.8) {
-                        await new Promise(resolve => setTimeout(resolve, 5));
-                    } else if (bufferUsage > 0.5) {
-                        await new Promise(resolve => setTimeout(resolve, 2));
-                    } else if (i % 50 === 0) {
-                        await new Promise(resolve => setTimeout(resolve, 1));
+                    // Throttling berdasarkan ukuran file
+                    if (file.size > 100 * 1024 * 1024) { // Files > 100MB
+                        if (i % 5 === 0) { // Every 5 chunks
+                            await new Promise(resolve => setTimeout(resolve, 5));
+                        }
+                    } else if (file.size > 10 * 1024 * 1024) { // Files > 10MB
+                        if (i % 10 === 0) { // Every 10 chunks
+                            await new Promise(resolve => setTimeout(resolve, 2));
+                        }
+                    } else {
+                        if (i % 20 === 0) { // Every 20 chunks for small files
+                            await new Promise(resolve => setTimeout(resolve, 1));
+                        }
                     }
                 }
                 
@@ -962,12 +976,28 @@
                         return;
                     }
                     
-                    try {
-                        this.dataChannel.send(message);
-                        resolve();
-                    } catch (error) {
-                        reject(error);
-                    }
+                    const maxRetries = 3;
+                    let retries = 0;
+                    
+                    const trySend = () => {
+                        try {
+                            this.dataChannel.send(message);
+                            resolve();
+                        } catch (error) {
+                            retries++;
+                            if (error.name === 'OperationError' && retries < maxRetries) {
+                                // Queue is full, wait and retry
+                                console.warn(`Send queue full, retry ${retries}/${maxRetries}`);
+                                setTimeout(() => {
+                                    trySend();
+                                }, 100 * retries); // Exponential backoff
+                            } else {
+                                reject(error);
+                            }
+                        }
+                    };
+                    
+                    trySend();
                 });
             }
             
