@@ -471,9 +471,7 @@
                     
                     // Create data channel
                     this.dataChannel = this.peerConnection.createDataChannel('fileTransfer', {
-                        ordered: true,
-                        maxPacketLifeTime: 30000,
-                        maxRetransmits: 3
+                        ordered: true
                     });
                     this.setupDataChannel(this.dataChannel);
                     
